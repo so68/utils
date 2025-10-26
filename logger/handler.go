@@ -58,10 +58,20 @@ func (h *customHandler) WithGroup(name string) slog.Handler {
 }
 
 func (h *customHandler) Handle(ctx context.Context, r slog.Record) error {
-	// 添加调用位置信息到 JSON 输出 - 根据日志级别动态决定
-	if h.config.ShouldAddSource(r.Level) {
-		// customHandler 的调用栈深度：Handle(0) -> slog.log(1) -> slog.Debug(2) -> UserCode(3)
-		// 所以直接使用 CallerSkip 来获取用户代码的调用位置
+	// 检查是否已经有调用位置信息（由 mixedHandler 添加）
+	hasSourceInfo := false
+	r.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "file" || attr.Key == "line" || attr.Key == "function" {
+			hasSourceInfo = true
+			return false // 停止遍历
+		}
+		return true
+	})
+
+	// 如果没有调用位置信息，且需要添加，则添加
+	if !hasSourceInfo && h.config.ShouldAddSource(r.Level) {
+		// customHandler 单独使用时的调用栈深度：Handle(0) -> slog.log(1) -> slog.Debug(2) -> UserCode(3)
+		// 所以使用 CallerSkip 来获取用户代码的调用位置
 		if pc, file, line, ok := runtime.Caller(h.callerSkip); ok {
 			attrs := []slog.Attr{
 				slog.String("file", file),
@@ -71,7 +81,8 @@ func (h *customHandler) Handle(ctx context.Context, r slog.Record) error {
 			r.AddAttrs(attrs...)
 		}
 	}
-	// 直接调用底层的 JSON handler，不通过 slog 的默认处理器
+
+	// 直接调用底层的 JSON handler
 	return h.handler.Handle(ctx, r)
 }
 
@@ -124,6 +135,30 @@ func (h *textHandler) WithGroup(name string) slog.Handler {
 }
 
 func (h *textHandler) Handle(ctx context.Context, r slog.Record) error {
+	// 检查是否已经有调用位置信息（由 mixedHandler 添加）
+	hasSourceInfo := false
+	r.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "file" || attr.Key == "line" || attr.Key == "function" {
+			hasSourceInfo = true
+			return false // 停止遍历
+		}
+		return true
+	})
+
+	// 如果没有调用位置信息，且需要添加，则添加
+	if !hasSourceInfo && h.config.ShouldAddSource(r.Level) {
+		// textHandler 单独使用时的调用栈深度：Handle(0) -> slog.log(1) -> slog.Debug(2) -> UserCode(3)
+		// 所以使用 CallerSkip 来获取用户代码的调用位置
+		if pc, file, line, ok := runtime.Caller(h.callerSkip); ok {
+			attrs := []slog.Attr{
+				slog.String("file", file),
+				slog.Int("line", line),
+				slog.String("function", runtime.FuncForPC(pc).Name()),
+			}
+			r.AddAttrs(attrs...)
+		}
+	}
+
 	var builder strings.Builder
 
 	// 时间戳
@@ -143,13 +178,8 @@ func (h *textHandler) Handle(ctx context.Context, r slog.Record) error {
 	// 消息
 	builder.WriteString(r.Message)
 
-	// 属性
+	// 属性（包括调用位置信息）
 	h.writeAttrs(&builder, r)
-
-	// 调用位置信息 - 根据日志级别动态决定
-	if h.config.ShouldAddSource(r.Level) {
-		h.writeSource(&builder)
-	}
 
 	// 输出
 	_, err := fmt.Fprintln(h.writer, builder.String())
@@ -159,7 +189,16 @@ func (h *textHandler) Handle(ctx context.Context, r slog.Record) error {
 // writeAttrs 写入属性信息
 func (h *textHandler) writeAttrs(builder *strings.Builder, r slog.Record) {
 	first := true
+	var sourceAttrs []slog.Attr
+
 	r.Attrs(func(attr slog.Attr) bool {
+		// 检查是否是调用位置相关的属性
+		if attr.Key == "file" || attr.Key == "line" || attr.Key == "function" {
+			sourceAttrs = append(sourceAttrs, attr)
+			return true
+		}
+
+		// 处理普通属性
 		if first {
 			builder.WriteString(" | ")
 			first = false
@@ -171,15 +210,30 @@ func (h *textHandler) writeAttrs(builder *strings.Builder, r slog.Record) {
 		builder.WriteString(fmt.Sprintf("%v", attr.Value.Any()))
 		return true
 	})
+
+	// 如果有调用位置信息，特殊处理
+	if len(sourceAttrs) > 0 {
+		h.writeSourceFromAttrs(builder, sourceAttrs)
+	}
 }
 
-// writeSource 写入调用位置信息
-func (h *textHandler) writeSource(builder *strings.Builder) {
-	// textHandler 的调用栈深度：writeSource(0) -> Handle(1) -> slog.log(2) -> slog.Debug(3) -> UserCode(4)
-	// customHandler 的调用栈深度：Handle(0) -> slog.log(1) -> slog.Debug(2) -> UserCode(3)
-	// 所以 textHandler 需要比 customHandler 多跳过 1 层
-	callerSkip := h.callerSkip + 1
-	if pc, file, line, ok := runtime.Caller(callerSkip); ok {
+// writeSourceFromAttrs 从属性中写入调用位置信息
+func (h *textHandler) writeSourceFromAttrs(builder *strings.Builder, sourceAttrs []slog.Attr) {
+	var file, line, function string
+
+	// 提取调用位置信息
+	for _, attr := range sourceAttrs {
+		switch attr.Key {
+		case "file":
+			file = attr.Value.String()
+		case "line":
+			line = fmt.Sprintf("%d", attr.Value.Int64())
+		case "function":
+			function = attr.Value.String()
+		}
+	}
+
+	if file != "" && line != "" {
 		// 相对路径
 		relFile := file
 		if h.workingDir != "" {
@@ -188,15 +242,14 @@ func (h *textHandler) writeSource(builder *strings.Builder) {
 			}
 		}
 
-		// 函数名
-		funcName := runtime.FuncForPC(pc).Name()
-
 		builder.WriteString(" | ")
 		builder.WriteString(relFile)
 		builder.WriteString(":")
-		builder.WriteString(fmt.Sprintf("%d", line))
-		builder.WriteString(" | ")
-		builder.WriteString(funcName)
+		builder.WriteString(line)
+		if function != "" {
+			builder.WriteString(" | ")
+			builder.WriteString(function)
+		}
 	}
 }
 
@@ -271,6 +324,20 @@ func (h *mixedHandler) WithGroup(name string) slog.Handler {
 }
 
 func (h *mixedHandler) Handle(ctx context.Context, r slog.Record) error {
+	// 添加调用位置信息到记录中 - 根据日志级别动态决定
+	if h.config.ShouldAddSource(r.Level) {
+		// mixedHandler 的调用栈深度：Handle(0) -> slog.log(1) -> slog.Debug(2) -> UserCode(3)
+		// 所以直接使用 CallerSkip 来获取用户代码的调用位置
+		if pc, file, line, ok := runtime.Caller(h.config.CallerSkip); ok {
+			attrs := []slog.Attr{
+				slog.String("file", file),
+				slog.Int("line", line),
+				slog.String("function", runtime.FuncForPC(pc).Name()),
+			}
+			r.AddAttrs(attrs...)
+		}
+	}
+
 	// 同时处理控制台和文件输出
 	var consoleErr, fileErr error
 

@@ -2,17 +2,7 @@ package client
 
 import (
 	"fmt"
-	"log"
 )
-
-// MessageHandler 回调函数：处理接收到的消息
-type MessageHandler func(message []byte)
-
-// BeforeConnectionHandler 连接前的回调函数
-type BeforeConnectionHandler func(websocket *Websocket) error
-
-// AfterConnectionHandler 连接成功后的回调函数
-type AfterConnectionHandler func(websocket *Websocket) error
 
 // Config WebSocket 配置
 type Config struct {
@@ -48,14 +38,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Logger 接口：抽象日志
-type Logger interface {
-	Debugf(format string, args ...interface{})
-	Infof(format string, args ...interface{})
-	Warnf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-}
-
 // Metrics 性能指标接口
 type Metrics interface {
 	IncrementCounter(name string, tags map[string]string)
@@ -69,27 +51,3 @@ type NoopMetrics struct{}
 func (n *NoopMetrics) IncrementCounter(_ string, _ map[string]string)           {}
 func (n *NoopMetrics) RecordHistogram(_ string, _ float64, _ map[string]string) {}
 func (n *NoopMetrics) RecordGauge(_ string, _ float64, _ map[string]string)     {}
-
-// NoopLogger 默认空实现（silent）
-type NoopLogger struct{}
-
-func (n *NoopLogger) Debugf(_ string, _ ...interface{}) {}
-func (n *NoopLogger) Infof(_ string, _ ...interface{})  {}
-func (n *NoopLogger) Warnf(_ string, _ ...interface{})  {}
-func (n *NoopLogger) Errorf(_ string, _ ...interface{}) {}
-
-// StdLogger 标准库适配（可选，用户可替换）
-type StdLogger struct{}
-
-func (s *StdLogger) Debugf(format string, args ...interface{}) {
-	log.Printf("[DEBUG] "+format, args...)
-}
-func (s *StdLogger) Infof(format string, args ...interface{}) {
-	log.Printf("[INFO] "+format, args...)
-}
-func (s *StdLogger) Warnf(format string, args ...interface{}) {
-	log.Printf("[WARN] "+format, args...)
-}
-func (s *StdLogger) Errorf(format string, args ...interface{}) {
-	log.Printf("[ERROR] "+format, args...)
-}

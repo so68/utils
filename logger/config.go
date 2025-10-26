@@ -58,7 +58,7 @@ func DefaultConfig() *Config {
 		Level:      LevelInfo,
 		Output:     OutputBoth,
 		TimeFormat: time.RFC3339,
-		CallerSkip: 4, // 正确的调用栈跳过层数，指向用户代码所在位置
+		CallerSkip: 3, // 正确的调用栈跳过层数，指向用户代码所在位置
 		File: FileConfig{
 			Path:       "logs/app.log",
 			MaxSizeMb:  100,

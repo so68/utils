@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,15 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+// MessageHandler 回调函数：处理接收到的消息
+type MessageHandler func(message []byte)
+
+// BeforeConnectionHandler 连接前的回调函数
+type BeforeConnectionHandler func() error
+
+// AfterConnectionHandler 连接成功后的回调函数
+type AfterConnectionHandler func() error
 
 // Websocket 通用 WebSocket 管理器
 type Websocket struct {
@@ -19,7 +29,7 @@ type Websocket struct {
 	messageHandler    MessageHandler          // 消息处理器
 	beforeConnHandler BeforeConnectionHandler // 连接前的回调处理器
 	afterConnHandler  AfterConnectionHandler  // 连接成功后的回调处理器
-	logger            Logger                  // 日志记录器
+	logger            *slog.Logger            // 日志记录器
 	metrics           Metrics                 // 性能指标
 	ctx               context.Context         // 上下文
 	cancel            context.CancelFunc      // 取消函数
@@ -40,8 +50,8 @@ func NewWebsocket(dialURL string, messageHandler MessageHandler) *Websocket {
 	m := &Websocket{
 		dialer:         dialer,
 		config:         DefaultConfig(),
+		logger:         slog.Default(),
 		messageHandler: messageHandler,
-		logger:         &NoopLogger{},
 		metrics:        &NoopMetrics{},
 		ctx:            ctx,
 		cancel:         cancel,
@@ -77,28 +87,33 @@ func (m *Websocket) Start() error {
 }
 
 // SetConfig 设置配置
-func (m *Websocket) SetConfig(config Config) {
+func (m *Websocket) SetConfig(config Config) *Websocket {
 	m.config = config
+	return m
 }
 
 // SetLogger 设置日志记录器
-func (m *Websocket) SetLogger(logger Logger) {
+func (m *Websocket) SetLogger(logger *slog.Logger) *Websocket {
 	m.logger = logger
+	return m
 }
 
 // SetMetrics 设置性能指标
-func (m *Websocket) SetMetrics(metrics Metrics) {
+func (m *Websocket) SetMetrics(metrics Metrics) *Websocket {
 	m.metrics = metrics
+	return m
 }
 
 // SetBeforeConnectionHandler 设置连接前的回调处理器
-func (m *Websocket) SetBeforeConnectionHandler(handler BeforeConnectionHandler) {
+func (m *Websocket) SetBeforeConnectionHandler(handler BeforeConnectionHandler) *Websocket {
 	m.beforeConnHandler = handler
+	return m
 }
 
 // SetAfterConnectionHandler 设置连接成功后的回调处理器
-func (m *Websocket) SetAfterConnectionHandler(handler AfterConnectionHandler) {
+func (m *Websocket) SetAfterConnectionHandler(handler AfterConnectionHandler) *Websocket {
 	m.afterConnHandler = handler
+	return m
 }
 
 // WriteMessage 发送消息
@@ -106,10 +121,10 @@ func (m *Websocket) WriteMessage(message []byte) error {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 	if m.conn == nil {
-		return fmt.Errorf("connection is not established")
+		return fmt.Errorf("WebSocket connection is not established")
 	}
 	if err := m.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-		return fmt.Errorf("write message failed: %v", err)
+		return fmt.Errorf("WebSocket WriteMessage failed: %w", err)
 	}
 	return nil
 }
@@ -118,11 +133,9 @@ func (m *Websocket) WriteMessage(message []byte) error {
 func (m *Websocket) connect(dialURL string) error {
 	// 执行连接前的回调
 	if m.beforeConnHandler != nil {
-		if err := m.beforeConnHandler(m); err != nil {
-			m.logger.Errorf("Before connection handler error: %v", err)
-			return fmt.Errorf("before connection handler failed: %v", err)
+		if err := m.beforeConnHandler(); err != nil {
+			return fmt.Errorf("WebSocket before connection handler failed: %w", err)
 		}
-		m.logger.Debugf("Before connection handler executed successfully")
 	}
 
 	reqHeader := http.Header{}
@@ -146,13 +159,11 @@ func (m *Websocket) connect(dialURL string) error {
 	conn, _, err := dialer.DialContext(ctx, dialURL, reqHeader)
 	if err != nil {
 		m.retryCount++
-		m.logger.Errorf("Connection attempt %d failed: %v", m.retryCount, err)
-
 		if m.shouldRetry() {
 			// 不在这里递归调用connect，让调用者处理重试逻辑
-			return fmt.Errorf("connection failed: %v", err)
+			return fmt.Errorf("WebSocket connection failed: %w", err)
 		}
-		return fmt.Errorf("connect failed after %d retries: %v", m.retryCount, err)
+		return fmt.Errorf("WebSocket connect failed after %d retries: %w", m.retryCount, err)
 	}
 
 	// 更新连接状态（需要加锁保护）
@@ -168,22 +179,19 @@ func (m *Websocket) connect(dialURL string) error {
 	// 设置pong处理器（仅当使用标准ping时）
 	if m.config.PingMessage == "" {
 		conn.SetPongHandler(func(appData string) error {
-			m.logger.Debugf("Pong received")
 			return nil
 		})
 	}
 
-	m.logger.Infof("WebSocket connected to %s", dialURL)
+	m.logger.Info("WebSocket connected to", "url", dialURL)
 
 	// 执行连接成功后的回调
 	if m.afterConnHandler != nil {
-		if err := m.afterConnHandler(m); err != nil {
-			m.logger.Errorf("After connection handler error: %v", err)
+		if err := m.afterConnHandler(); err != nil {
 			// 连接回调失败，关闭连接
 			conn.Close()
-			return fmt.Errorf("after connection handler failed: %v", err)
+			return fmt.Errorf("WebSocket after connection handler failed: %w", err)
 		}
-		m.logger.Debugf("After connection handler executed successfully")
 	}
 	// 记录连接指标
 	m.metrics.IncrementCounter("websocket.connections.established", map[string]string{
@@ -211,7 +219,7 @@ func (m *Websocket) listenLoop() {
 
 		// 检查是否需要重连
 		if m.shouldRetry() {
-			m.logger.Warnf("Reconnecting... (attempt %d)", m.retryCount+1)
+			m.logger.Info("WebSocket Reconnecting...", "attempt", m.retryCount+1)
 			// 使用延迟重连，避免立即递归
 			m.goroutines.Add(1)
 			go func() {
@@ -229,11 +237,11 @@ func (m *Websocket) listenLoop() {
 						m.pingLoop()
 					}()
 				} else {
-					m.logger.Errorf("Reconnect failed: %v", err)
+					m.logger.Error("WebSocket Reconnect failed", "error", err.Error())
 				}
 			}()
 		} else {
-			m.logger.Warnf("WebSocket permanently closed after %d retries", m.retryCount)
+			m.logger.Info("WebSocket permanently closed after retries", "retry_count", m.retryCount)
 		}
 	}()
 
@@ -248,19 +256,18 @@ func (m *Websocket) listenLoop() {
 			m.mux.RUnlock()
 
 			if conn == nil {
-				m.logger.Warnf("Connection is nil, stopping listen loop")
+				m.logger.Info("WebSocket Connection is nil, stopping listen loop")
 				return
 			}
 
 			_, message, err := conn.ReadMessage()
 			if err != nil {
-				m.logger.Errorf("Read error: %v", err)
+				m.logger.Error("WebSocket ReadMessage error", "error", err.Error())
 				return
 			}
 
 			// 记录消息计数（原子操作，无需锁）
 			atomic.AddInt64(&m.messageCount, 1)
-
 			m.metrics.IncrementCounter("websocket.messages.received", map[string]string{
 				"url": m.dialURL,
 			})
@@ -269,10 +276,10 @@ func (m *Websocket) listenLoop() {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						m.logger.Errorf("Handler panic: %v", r)
 						m.metrics.IncrementCounter("websocket.handler.panic", map[string]string{
 							"url": m.dialURL,
 						})
+						m.logger.Error("WebSocket Handler panic", "error", r)
 					}
 				}()
 				m.messageHandler(message)
@@ -303,14 +310,13 @@ func (m *Websocket) pingLoop() {
 			if m.config.PingMessage != "" {
 				// 发送JSON消息作为心跳
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(m.config.PingMessage)); err != nil {
-					m.logger.Errorf("Ping message error: %v", err)
+					m.logger.Error("WebSocket Ping message error", "error", err.Error())
 					return // 触发重连
 				}
-				m.logger.Debugf("Ping message sent: %s", m.config.PingMessage)
 			} else {
 				// 使用标准ping帧
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					m.logger.Errorf("Ping error: %v", err)
+					m.logger.Error("WebSocket Ping error", "error", err.Error())
 					return // 触发重连
 				}
 			}
@@ -384,8 +390,7 @@ func (m *Websocket) Close() {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// 忽略关闭时的错误
-					m.logger.Debugf("Close frame send panic (ignored): %v", r)
+					m.logger.Error("WebSocket Close frame send panic (ignored)")
 				}
 			}()
 			// 设置关闭超时
@@ -395,18 +400,22 @@ func (m *Websocket) Close() {
 			// 尝试发送关闭帧
 			select {
 			case <-ctx.Done():
-				m.logger.Warnf("Close frame timeout")
+				m.logger.Error("WebSocket Close frame timeout")
 			default:
-				m.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				if err := m.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")); err != nil {
+					m.logger.Error("WebSocket Failed to send close frame", "error", err.Error())
+				}
 			}
 		}()
 
 		// 关闭连接
-		m.conn.Close()
+		if err := m.conn.Close(); err != nil {
+			m.logger.Error("WebSocket Failed to close connection", "error", err.Error())
+		}
 		m.conn = nil
 	}
 
 	// 等待所有goroutine完成
 	m.goroutines.Wait()
-	m.logger.Infof("WebSocket connection closed")
+	m.logger.Info("WebSocket connection closed")
 }
