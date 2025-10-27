@@ -1,4 +1,4 @@
-module utils
+module github.com/so68/utils
 
 go 1.24.2
 
