@@ -32,7 +32,6 @@ func TestWebsocket(t *testing.T) {
 	// 设置连接成功后的回调处理器
 	ws.SetAfterConnectionHandler(func() error {
 		return ws.WriteMessage([]byte(`{"method":"SUBSCRIBE","params":["btcusdt@ticker"],"id":1}`))
-		return nil
 	})
 
 	// 运行WebSocket

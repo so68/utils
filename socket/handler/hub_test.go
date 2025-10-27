@@ -11,6 +11,25 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+/*
+WebSocket Hub功能测试
+
+本文件用于测试Hub结构体的各种功能特性，
+包括连接管理、消息广播、事件处理等。
+
+运行命令：
+go test -v -run "^Test.*Hub.*$"
+
+测试内容：
+1. Hub创建和配置 (NewHub, SetConfig, SetEventHandler等)
+2. 连接管理 (AddConnection, RemoveConnection, GetConnection等)
+3. 消息处理 (SendMessage, Broadcast, BroadcastWithFilter等)
+4. 事件处理 (ConnectionAdded, ConnectionRemoved等)
+5. 统计信息 (GetStats, GetConnectionCount等)
+6. 错误处理和边界条件
+7. 并发访问和性能测试
+*/
+
 // TestNewHub 测试 Hub 创建
 func TestNewHub(t *testing.T) {
 	messageHandler := func(connID string, message []byte) {

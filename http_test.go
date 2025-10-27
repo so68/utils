@@ -5,6 +5,25 @@ import (
 	"time"
 )
 
+/*
+HTTP客户端功能测试
+
+本文件用于测试HTTPClient结构体的各种功能特性，
+包括HTTP请求方法、链式调用、错误处理等。
+
+运行命令：
+go test -v -run "^Test.*HTTP.*$"
+
+测试内容：
+1. 客户端创建和配置 (NewHTTPClient, SetTimeout, SetHeader等)
+2. HTTP请求方法 (Get, Post, Put, Delete, Patch)
+3. 链式调用功能验证
+4. 响应处理方法 (String, JSON, IsSuccess)
+5. URL构建和参数处理
+6. 错误处理和边界条件
+7. 复杂请求场景测试
+*/
+
 func TestNewHTTPClient(t *testing.T) {
 	client := NewHTTPClient("https://httpbin.org")
 	if client == nil {
